@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Rally Pre‑Race Inspection</title>
+  <!--
+  ==============================
+  Rally Pre‑Race Inspection – Single‑file Web App
+  ==============================
+  What this file does
+  - Mobile‑first inspection checklist for rally scrutineering
+  - Saves progress to localStorage (auto‑save)
+  - Generates a nicely formatted PDF
+  - Uploads that PDF to a specific Google Drive folder
+
+  How to enable Google Drive uploads (one‑time setup)
+  1) Create a Google Cloud project → Enable "Google Drive API".
+  2) Configure OAuth consent screen (External or Internal as suits).
+  3) Create a Web OAuth 2.0 Client ID (use your app domain/port in Authorized JavaScript origins).
+  4) Note your CLIENT_ID and (optionally) API_KEY (Drive discovery works without apiKey when using OAuth).
+  5) Create a Google Drive folder to store PDFs. Copy its Folder ID (the long string in the URL).
+  6) In the Settings section of this page, paste your Client ID and Folder ID.
+     (You can also hardcode them below by replacing the DEFAULT_* constants.)
+  7) Click "Sign in to Google" → then generate and upload a PDF.
+
+  Security & Permissions
+  - Scope used: https://www.googleapis.com/auth/drive.file (limits access to files your app creates).
+  - If your Drive admin restricts apps, an admin may need to allowlist your OAuth client.
+
+  Offline/Installable (optional)
+  - This single file runs offline once loaded, but if you want installable PWA behavior,
+    add a manifest.json and a service worker in a multi‑file setup.
+  -->
+
+  <style>
+    :root { --bg: #0b0c10; --card:#12141a; --ink:#f5f7fa; --muted:#aab3c5; --brand:#23c55e; --warn:#f59e0b; --bad:#ef4444; --line:#232733; }
+    html, body { height:100%; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, Helvetica, Arial, sans-serif; background: var(--bg); color: var(--ink); }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 16px 16px 96px; }
+    header { position: sticky; top: 0; z-index: 5; background: linear-gradient(180deg, rgba(11,12,16,0.95), rgba(11,12,16,0.6) 60%, rgba(11,12,16,0)); backdrop-filter: blur(6px); }
+    .title { font-weight: 800; letter-spacing: .2px; font-size: 1.4rem; display:flex; align-items:center; gap:10px; padding: 12px 4px; }
+    .badge { font-size: .72rem; color: var(--bg); background: var(--brand); padding: 4px 8px; border-radius: 999px; }
+
+    .toolbar { display:flex; gap:8px; flex-wrap: wrap; padding: 8px 4px 12px; border-bottom:1px solid var(--line); margin-bottom: 14px; }
+    .btn { appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--ink); padding: 10px 14px; border-radius: 14px; font-weight: 600; font-size: .95rem; }
+    .btn:active { transform: translateY(1px); }
+    .btn.primary { background: var(--brand); color: #0a0f0a; border-color: #1fb455; }
+    .btn.warn { background: var(--warn); color: #1a1206; border-color: #e49311; }
+    .btn.ghost { background: transparent; }
+
+    .grid { display:grid; grid-template-columns: 1fr; gap: 12px; }
+    @media (min-width: 680px){ .grid { grid-template-columns: 1fr 1fr; } }
+
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+    .card h2 { margin: 4px 0 10px; font-size: 1.05rem; letter-spacing: .2px; }
+    .hint { color: var(--muted); font-size: .9rem; }
+
+    .row { display:grid; grid-template-columns: 1fr auto; align-items:center; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 8px; }
+    .row label { font-size: 1rem; }
+    .row small { color: var(--muted); }
+
+    .toggle { display:flex; gap:6px; align-items:center; }
+    .toggle input[type="checkbox"] { width: 22px; height: 22px; }
+
+    .field { display:flex; flex-direction:column; gap:6px; margin-bottom: 10px; }
+    .field input, .field select, .field textarea { background:#0f1218; color: var(--ink); border:1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: 1rem; }
+    .field textarea { min-height: 84px; resize: vertical; }
+
+    .status { display:flex; gap:8px; align-items:center; font-weight:700; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--brand); }
+    .dot.bad { background: var(--bad); }
+
+    footer { position: fixed; inset: auto 0 0 0; background: linear-gradient(180deg, rgba(11,12,16,0), rgba(11,12,16,0.85) 30%, rgba(11,12,16,0.95)); padding: 14px 16px; border-top: 1px solid var(--line); }
+    .footbar { display:flex; gap:8px; }
+    .footbar .btn { flex:1; }
+
+    .section-title { display:flex; justify-content:space-between; align-items:center; gap:8px; margin: 12px 2px 6px; }
+    .section-title h3 { margin:0; font-size: .95rem; color: var(--muted); font-weight:700; }
+
+    .kicker { color: var(--muted); font-size: .9rem; margin: 0 0 12px; }
+
+    /* Printable area for PDF rendering */
+    #printArea { background:#fff; color:#111; padding: 20px; width: 794px; /* A4 width at 96dpi approx */ }
+    #printArea h2 { margin: 0 0 8px; }
+    #printArea table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    #printArea th, #printArea td { border: 1px solid #ccc; padding: 6px; text-align: left; }
+    #printArea .pass { color: #087f23; font-weight:700; }
+    #printArea .fail { color: #c62828; font-weight:700; }
+
+    details.settings > summary { cursor: pointer; list-style: none; }
+    details.settings > summary::-webkit-details-marker { display:none; }
+    details.settings summary { display:flex; align-items:center; gap:8px; }
+    details.settings[open] .chev { transform: rotate(90deg); }
+    .chev { transition: transform .18s ease; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <div class="title">
+        🏁 Rally Pre‑Race Inspection
+        <span class="badge">Mobile‑Ready</span>
+      </div>
+      <div class="toolbar">
+        <button class="btn" id="saveDraftBtn" title="Save to this device">Save draft</button>
+        <button class="btn" id="clearBtn" title="Clear all fields">Clear</button>
+        <button class="btn primary" id="pdfBtn" title="Generate PDF">Generate PDF</button>
+        <button class="btn" id="uploadBtn" title="Upload last PDF to Drive">Upload PDF → Drive</button>
+        <button class="btn ghost" id="authBtn">Sign in to Google</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <p class="kicker">Fill out the checklist below. Your progress auto‑saves. When ready, tap <strong>Generate PDF</strong>. If configured, you can upload straight to your designated Google Drive folder.</p>
+
+    <details class="settings card" id="settings">
+      <summary><span class="chev">▶</span> <strong>Settings</strong> — Google Drive & App</summary>
+      <div class="grid" style="margin-top:10px;">
+        <div class="field">
+          <label>Google OAuth Client ID</label>
+          <input id="clientId" placeholder="YOUR_CLIENT_ID.apps.googleusercontent.com" />
+        </div>
+        <div class="field">
+          <label>Drive Folder ID for uploads</label>
+          <input id="folderId" placeholder="e.g. 1AbCDefGhijKLMNopQRstuVWxyz01234" />
+        </div>
+        <div class="field">
+          <label>Team / Event Name (optional)</label>
+          <input id="eventName" placeholder="e.g. Francis Brothers Rally 2025" />
+        </div>
+      </div>
+      <p class="hint">These settings are stored locally in your browser. Use a Folder ID you own or have edit access to.</p>
+    </details>
+
+    <section class="card">
+      <div class="section-title">
+        <h3>Vehicle & Admin</h3>
+        <div class="status" id="overallStatus"><span class="dot"></span><span>Passing</span></div>
+      </div>
+      <div class="grid">
+        <div class="field"><label>Event Name</label><input id="event" /></div>
+        <div class="field"><label>Car / Model</label><input id="carModel" /></div>
+        <div class="field"><label>Registration</label><input id="reg" /></div>
+        <div class="field"><label>Class</label><input id="class" /></div>
+        <div class="field"><label>Driver</label><input id="driver" /></div>
+        <div class="field"><label>Co‑driver</label><input id="codriver" /></div>
+        <div class="field"><label>Scrutineer</label><input id="inspector" /></div>
+        <div class="field"><label>Date</label><input id="date" type="date" /></div>
+      </div>
+      <div class="field"><label>Notes</label><textarea id="notes" placeholder="General comments, conditions, etc."></textarea></div>
+    </section>
+
+    <section class="grid">
+      <div class="card">
+        <h2>Safety</h2>
+        <div class="row"><div><label>Roll cage & padding</label><br><small>Condition, certification, clearances</small></div><div class="toggle"><input type="checkbox" data-key="safety_rollcage" /></div></div>
+        <div class="row"><div><label>Seats & mounts</label><br><small>Expiry, secure fixings</small></div><div class="toggle"><input type="checkbox" data-key="safety_seats" /></div></div>
+        <div class="row"><div><label>Harnesses</label><br><small>Expiry, condition, routing</small></div><div class="toggle"><input type="checkbox" data-key="safety_harness" /></div></div>
+        <div class="row"><div><label>Fire extinguisher/system</label><br><small>Charged, date, mounting</small></div><div class="toggle"><input type="checkbox" data-key="safety_fire" /></div></div>
+        <div class="row"><div><label>Electrical kill switch</label><br><small>Function, labeling</small></div><div class="toggle"><input type="checkbox" data-key="safety_kill" /></div></div>
+        <div class="row"><div><label>Helmet & FHR checks</label><br><small>Standards, condition</small></div><div class="toggle"><input type="checkbox" data-key="safety_helmets" /></div></div>
+      </div>
+
+      <div class="card">
+        <h2>Chassis & Brakes</h2>
+        <div class="row"><div><label>Brakes</label><br><small>Lines, leaks, pedal feel</small></div><div class="toggle"><input type="checkbox" data-key="brake_system" /></div></div>
+        <div class="row"><div><label>Suspension</label><br><small>Leaks, play, ride height</small></div><div class="toggle"><input type="checkbox" data-key="suspension" /></div></div>
+        <div class="row"><div><label>Steering</label><br><small>Play, joints, rack</small></div><div class="toggle"><input type="checkbox" data-key="steering" /></div></div>
+        <div class="row"><div><label>Wheels & tyres</label><br><small>Condition, torque, clearance</small></div><div class="toggle"><input type="checkbox" data-key="wheels_tyres" /></div></div>
+      </div>
+
+      <div class="card">
+        <h2>Engine & Driveline</h2>
+        <div class="row"><div><label>Fluids</label><br><small>Oil, coolant, brake, leaks</small></div><div class="toggle"><input type="checkbox" data-key="fluids" /></div></div>
+        <div class="row"><div><label>Fuel system</label><br><small>Lines, pump, cell, vents</small></div><div class="toggle"><input type="checkbox" data-key="fuel" /></div></div>
+        <div class="row"><div><label>Exhaust</label><br><small>Mounts, leaks, noise</small></div><div class="toggle"><input type="checkbox" data-key="exhaust" /></div></div>
+        <div class="row"><div><label>Driveline</label><br><small>CVs, shafts, mounts</small></div><div class="toggle"><input type="checkbox" data-key="driveline" /></div></div>
+      </div>
+
+      <div class="card">
+        <h2>Electrical & Lighting</h2>
+        <div class="row"><div><label>Battery secure</label><br><small>Hold‑down, terminals covered</small></div><div class="toggle"><input type="checkbox" data-key="battery" /></div></div>
+        <div class="row"><div><label>Lights & indicators</label><br><small>Headlights, brake, rain light</small></div><div class="toggle"><input type="checkbox" data-key="lights" /></div></div>
+        <div class="row"><div><label>Wipers & washers</label><br><small>Function and coverage</small></div><div class="toggle"><input type="checkbox" data-key="wipers" /></div></div>
+        <div class="row"><div><label>Horn</label><br><small>Operational</small></div><div class="toggle"><input type="checkbox" data-key="horn" /></div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Documents</h2>
+      <div class="grid">
+        <div class="row"><div><label>Logbook</label></div><div class="toggle"><input type="checkbox" data-key="doc_logbook" /></div></div>
+        <div class="row"><div><label>Insurance</label></div><div class="toggle"><input type="checkbox" data-key="doc_insurance" /></div></div>
+        <div class="row"><div><label>Entry & licences</label></div><div class="toggle"><input type="checkbox" data-key="doc_licences" /></div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Sign‑off</h2>
+      <div class="grid">
+        <div class="field"><label>Outcome</label>
+          <select id="outcome">
+            <option value="Pass">Pass</option>
+            <option value="Conditional Pass">Conditional Pass</option>
+            <option value="Fail">Fail</option>
+          </select>
+        </div>
+        <div class="field"><label>Follow‑ups / Defects</label>
+          <textarea id="defects" placeholder="List any defects or required fixes"></textarea>
+        </div>
+      </div>
+    </section>
+
+    <!-- Hidden area rendered into the PDF via html2canvas -->
+    <div id="printArea" style="position:absolute; left:-99999px; top:0;"></div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="footbar">
+        <button class="btn" id="shareBtn" title="Share draft (Web Share API, if supported)">Share draft</button>
+        <button class="btn warn" id="resetBtn" title="Reset to default">Reset</button>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Google APIs: Identity Services + Discovery client -->
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer></script>
+  <!-- PDF libs -->
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+
+  <script>
+  // ===== Config (you can hardcode defaults here) =====
+  const DEFAULT_CLIENT_ID = ""; // e.g. 1234567890-abc.apps.googleusercontent.com
+  const DEFAULT_FOLDER_ID = ""; // e.g. 1AbCDefGhijKLMNopQRstuVWxyz01234
+  const STORAGE_KEY = 'rallyInspection.v1';
+
+  // ===== App State =====
+  let tokenClient = null; // Google Identity Services token client
+  let accessToken = null;
+  let lastPdfBlob = null; // stores the most recently generated PDF for upload
+
+  const el = (id) => document.getElementById(id);
+
+  const fields = [
+    'carModel','reg','event','class','driver','codriver','inspector','date','notes','eventName','outcome','defects'
+  ];
+
+  const checks = Array.from(document.querySelectorAll('input[type="checkbox"][data-key]'));
+
+  function getSettings() {
+    return {
+      clientId: el('clientId').value.trim() || DEFAULT_CLIENT_ID,
+      folderId: el('folderId').value.trim() || DEFAULT_FOLDER_ID,
+    };
+  }
+
+  function serialize() {
+    const data = {};
+    for (const f of fields) data[f] = el(f)?.value || '';
+    for (const c of checks) data[c.dataset.key] = c.checked;
+    return data;
+  }
+
+  function hydrate(data) {
+    for (const f of fields) if (f in data) el(f).value = data[f] || '';
+    for (const c of checks) if (c.dataset.key in data) c.checked = !!data[c.dataset.key];
+    recomputeStatus();
+  }
+
+  function saveLocal() {
+    const data = serialize();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }
+
+  function loadLocal() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return;
+    try { hydrate(JSON.parse(raw)); } catch(e) { console.warn('Bad local data', e); }
+  }
+
+  function clearAll() {
+    localStorage.removeItem(STORAGE_KEY);
+    document.querySelector('form')?.reset();
+    for (const f of fields) el(f).value = '';
+    for (const c of checks) c.checked = false;
+    el('defects').value = '';
+    el('outcome').value = 'Pass';
+    recomputeStatus();
+  }
+
+  function recomputeStatus() {
+    const total = checks.length;
+    const ok = checks.filter(c => c.checked).length;
+    const pct = total ? (ok/total) : 1;
+    const status = el('overallStatus');
+    status.children[0].className = 'dot' + (pct < 0.8 ? ' bad' : '');
+    status.children[1].textContent = pct < 0.8 ? 'Needs Attention' : 'Passing';
+  }
+
+  // ===== PDF Generation =====
+  async function buildPrintableHtml(data){
+    const dt = new Date();
+    const when = data.date || dt.toISOString().slice(0,10);
+    const rows = checks.map(c => {
+      const label = c.closest('.row').querySelector('label').textContent;
+      const val = data[c.dataset.key] ? 'Pass' : 'Fail';
+      const cls = data[c.dataset.key] ? 'pass' : 'fail';
+      return `<tr><td>${label}</td><td class="${cls}">${val}</td></tr>`;
+    }).join('');
+
+    return `
+      <div>
+        <h2>Rally Pre‑Race Inspection Report</h2>
+        <p><strong>${data.eventName || 'Event'}</strong></p>
+        <table>
+          <tr><th>Event</th><td>${data.event || ''}</td></tr>
+          <tr><th>Car / Model</th><td>${data.carModel || ''}</td></tr>
+          <tr><th>Registration</th><td>${data.reg || ''}</td></tr>
+          <tr><th>Class</th><td>${data.class || ''}</td></tr>
+          <tr><th>Driver / Co‑driver</th><td>${data.driver || ''} / ${data.codriver || ''}</td></tr>
+          <tr><th>Scrutineer</th><td>${data.inspector || ''}</td></tr>
+          <tr><th>Date</th><td>${when}</td></tr>
+          <tr><th>Outcome</th><td><strong>${data.outcome || 'Pass'}</strong></td></tr>
+        </table>
+        <h3>Checklist</h3>
+        <table><tr><th>Item</th><th>Status</th></tr>${rows}</table>
+        <h3>Notes</h3>
+        <p>${(data.notes || '').replace(/\n/g,'<br>')}</p>
+        <h3>Follow‑ups / Defects</h3>
+        <p>${(data.defects || '').replace(/\n/g,'<br>')}</p>
+      </div>`;
+  }
+
+  async function generatePdf(){
+    const data = serialize();
+    saveLocal();
+
+    // Set up print area
+    const area = document.getElementById('printArea');
+    area.innerHTML = await buildPrintableHtml(data);
+
+    // Render to canvas
+    const canvas = await html2canvas(area, {scale: 2, backgroundColor: '#fff'});
+    const imgData = canvas.toDataURL('image/png');
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({orientation: 'portrait', unit: 'pt', format: 'a4'});
+
+    // Fit image to A4 width preserving aspect ratio
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+
+    const imgWidth = pageWidth - 40; // margins
+    const imgHeight = canvas.height * (imgWidth / canvas.width);
+
+    let y = 20;
+    if (imgHeight <= pageHeight - 40) {
+      pdf.addImage(imgData, 'PNG', 20, y, imgWidth, imgHeight);
+    } else {
+      // paginate
+      let remaining = imgHeight;
+      let position = 20;
+      let page = 0;
+      const ratio = imgWidth / canvas.width;
+      const sliceHeight = (pageHeight - 40) / ratio; // pixels to slice per page
+      while (remaining > 0) {
+        const sliceCanvas = document.createElement('canvas');
+        sliceCanvas.width = canvas.width;
+        sliceCanvas.height = Math.min(sliceHeight, remaining);
+        const ctx = sliceCanvas.getContext('2d');
+        ctx.drawImage(canvas, 0, page * sliceHeight, canvas.width, sliceCanvas.height, 0, 0, canvas.width, sliceCanvas.height);
+        const sliceData = sliceCanvas.toDataURL('image/png');
+        if (page > 0) pdf.addPage();
+        pdf.addImage(sliceData, 'PNG', 20, 20, imgWidth, sliceCanvas.height * ratio);
+        remaining -= sliceHeight;
+        page++;
+      }
+    }
+
+    const fileName = `Inspection-${(data.reg||'vehicle')}-${new Date().toISOString().slice(0,10)}.pdf`;
+    lastPdfBlob = pdf.output('blob');
+
+    // Auto download for convenience
+    pdf.save(fileName);
+
+    return { blob: lastPdfBlob, fileName };
+  }
+
+  // ===== Google Drive Upload =====
+  function loadGapi() {
+    return new Promise((resolve) => {
+      function chk(){ if (window.gapi && window.google) resolve(); else setTimeout(chk, 100); }
+      chk();
+    });
+  }
+
+  async function initGoogle(){
+    await loadGapi();
+    await new Promise(res => gapi.load('client', res));
+    // Drive discovery (optional when using raw HTTP; handy for future expansion)
+    await gapi.client.init({});
+
+    // Prepare token client
+    const clientId = getSettings().clientId;
+    if (!clientId) { alert('Set your Google OAuth Client ID in Settings.'); return; }
+
+    tokenClient = google.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: 'https://www.googleapis.com/auth/drive.file',
+      callback: (tokResp) => { accessToken = tokResp.access_token; uiSignedIn(true); }
+    });
+    uiSignedIn(!!accessToken);
+  }
+
+  function requestAccess(){
+    if (!tokenClient) { alert('Google not initialized yet.'); return; }
+    tokenClient.requestAccessToken({ prompt: 'consent' });
+  }
+
+  function uiSignedIn(signed) {
+    el('authBtn').textContent = signed ? 'Signed in ✓' : 'Sign in to Google';
+  }
+
+  async function uploadToDrive(){
+    const { folderId } = getSettings();
+    if (!folderId) { alert('Please set a Drive Folder ID in Settings.'); return; }
+    if (!accessToken) { alert('Please sign in to Google first.'); return; }
+    if (!lastPdfBlob) { alert('Generate a PDF first.'); return; }
+
+    const metadata = {
+      name: `Inspection-${(el('reg').value||'vehicle')}-${new Date().toISOString().slice(0,10)}.pdf`,
+      mimeType: 'application/pdf',
+      parents: [folderId]
+    };
+
+    const boundary = '-------314159265358979323846';
+    const delimiter = `\r\n--${boundary}\r\n`;
+    const closeDelim = `\r\n--${boundary}--`;
+
+    const reader = new FileReader();
+
+    const uploadPromise = new Promise((resolve, reject) => {
+      reader.onload = async (e) => {
+        const base64Data = e.target.result.split(',')[1];
+        const multipartBody =
+          delimiter + 'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+          JSON.stringify(metadata) +
+          delimiter + 'Content-Type: application/pdf\r\n' + 'Content-Transfer-Encoding: base64\r\n\r\n' +
+          base64Data + closeDelim;
+
+        try {
+          const resp = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+            method: 'POST',
+            headers: {
+              'Authorization': 'Bearer ' + accessToken,
+              'Content-Type': 'multipart/related; boundary=' + boundary,
+            },
+            body: multipartBody
+          });
+          if (!resp.ok) throw new Error(await resp.text());
+          const json = await resp.json();
+          alert('Uploaded to Drive: ' + json.name);
+        } catch (err) {
+          console.error(err);
+          alert('Upload failed: ' + err.message);
+        }
+        resolve();
+      };
+      reader.onerror = reject;
+    });
+
+    reader.readAsDataURL(lastPdfBlob);
+    return uploadPromise;
+  }
+
+  // ===== Share (Optional) =====
+  async function shareDraft(){
+    const data = serialize();
+    const text = `Rally Inspection Draft\nCar: ${data.carModel}\nReg: ${data.reg}\nStatus: ${el('overallStatus').innerText}`;
+    if (navigator.share) {
+      try { await navigator.share({ title: 'Rally Inspection Draft', text }); }
+      catch(e) { console.warn('Share canceled', e); }
+    } else {
+      await navigator.clipboard.writeText(text);
+      alert('Draft details copied to clipboard.');
+    }
+  }
+
+  // ===== Event Wiring =====
+  function bindEvents(){
+    document.addEventListener('change', (e) => {
+      if (e.target.matches('input, textarea, select')) {
+        saveLocal();
+        if (e.target.type === 'checkbox') recomputeStatus();
+      }
+    });
+    el('saveDraftBtn').addEventListener('click', saveLocal);
+    el('clearBtn').addEventListener('click', () => { if (confirm('Clear all fields?')) clearAll(); });
+    el('resetBtn').addEventListener('click', () => { if (confirm('Reset to defaults?')) { clearAll(); localStorage.removeItem(STORAGE_KEY); } });
+    el('pdfBtn').addEventListener('click', generatePdf);
+    el('uploadBtn').addEventListener('click', uploadToDrive);
+    el('authBtn').addEventListener('click', () => initGoogle().then(requestAccess));
+    el('shareBtn').addEventListener('click', shareDraft);
+  }
+
+  // ===== Boot =====
+  (function boot(){
+    // Initialize date default
+    const today = new Date().toISOString().slice(0,10);
+    el('date').value = today;
+
+    // Load settings and draft
+    el('clientId').value = localStorage.getItem('clientId') || DEFAULT_CLIENT_ID;
+    el('folderId').value = localStorage.getItem('folderId') || DEFAULT_FOLDER_ID;
+
+    ['clientId','folderId'].forEach(id => {
+      el(id).addEventListener('change', () => localStorage.setItem(id, el(id).value.trim()));
+    });
+
+    loadLocal();
+    bindEvents();
+    recomputeStatus();
+  })();
+  </script>
+</body>
+</html>
